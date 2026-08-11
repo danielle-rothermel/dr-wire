@@ -47,7 +47,8 @@ def is_dispatchable_url(url: str) -> bool:
 
     A URL failing this check never reaches the wire, so checking it
     before dispatch lets the caller keep a malformed URL inside its own
-    typed reporting. This function is total and never raises.
+    typed reporting. Total over ``str`` inputs: any string httpx refuses
+    to parse returns ``False``.
     """
     try:
         parsed = httpx.URL(url)

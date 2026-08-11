@@ -90,6 +90,14 @@ class WireResponse:
 
     Every HTTP status arrives here, including redirects and server
     errors: a status is data, and classifying it is the caller's job.
+
+    ``headers`` is one flat name-to-value mapping, so a header the peer
+    sent more than once arrives as a single comma-joined value under one
+    lowercased name. That folding is lossy for headers whose repetitions
+    are not equivalent to a comma-joined list, ``Set-Cookie`` being the
+    standard case: its individual values cannot be recovered from this
+    mapping. A consumer that needs each repetition separately needs a
+    representation this type does not carry.
     """
 
     status_code: int
