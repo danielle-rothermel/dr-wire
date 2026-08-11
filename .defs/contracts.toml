@@ -1,1 +1,132 @@
-contracts = []
+[[contracts]]
+title = "Client bounds are explicit, complete, and never normalized away"
+statement = """
+Every HttpClientConfig field is required and carries no default, so no bound \
+is inherited unchosen. Timeouts are positive and finite; pool sizes and byte \
+limits are positive integers; max_keepalive_connections does not exceed \
+max_connections; neither phase timeout exceeds the general timeout. A phase \
+timeout larger than the general timeout is rejected rather than clamped. Each \
+wire request runs directly under native connect, read, write, and pool \
+timeouts derived from the config, each saturated at threading.TIMEOUT_MAX. \
+Native phase timeouts do not bound the total wall-clock duration of a slow \
+response that continues to produce bytes."""
+rationale = """
+Requiring every bound makes an unsized client impossible to construct. \
+Rejecting rather than clamping keeps the client from silently enforcing a \
+bound different from the one the caller recorded, because a normalization \
+here would diverge from a consumer's own sizing decision."""
+date = "2026-08-11"
+check = "uv run pytest -q tests/test_config.py tests/test_call.py"
+
+[[contracts]]
+title = "call is total for every wire-level condition"
+statement = """
+call returns a WireResponse or a WireFailure and never raises for a wire \
+condition. Refused byte bounds, every timeout phase, connection and network \
+failures, protocol violations, an undispatchable URL rejected at dispatch, \
+and any unrecognized httpx error all arrive as a WireFailure carrying its \
+kind, the originating exception type, a static summary message, and a full \
+traceback. Summary messages stay static and never embed peer-controlled \
+detail. Anything else escaping call is a defect of this package and crashes \
+loudly rather than being reported as a wire condition. The request bound is \
+checked before dispatch and the response bound while streaming, so a refused \
+body is never fully read; both refusals report observed_bytes."""
+rationale = """
+A total wire call lets a consumer keep every transport condition inside its \
+own typed reporting instead of catching transport exceptions. Reserving \
+raised exceptions for defects keeps a bug in this package from being \
+misreported as a failure of the peer."""
+date = "2026-08-11"
+check = "uv run pytest -q tests/test_call.py"
+
+[[contracts]]
+title = "HTTP statuses and redirects are data"
+statement = """
+Every HTTP status arrives as a WireResponse, including redirects and server \
+errors. Redirects are never followed, whatever the underlying client's own \
+default. The client assigns no meaning to a status: recoverability, retry \
+eligibility, and rejection semantics belong to the consumer."""
+rationale = """
+Status meaning is domain policy that differs per consumer, while receiving a \
+response is a wire fact. Not following redirects keeps one dispatch one wire \
+attempt, so a redirecting URL stays visible as a misconfiguration rather than \
+silently reaching a different peer."""
+date = "2026-08-11"
+check = "uv run pytest -q tests/test_call.py"
+
+[[contracts]]
+title = "Nothing this package exposes is persisted vocabulary"
+statement = """
+WireFailureKind members, field names, and message strings are in-process \
+values only. A consumer that records a wire outcome maps these values into \
+its own vocabulary at its own boundary and pins its own literals. \
+parse_retry_after applies no magnitude or length cap and is_dispatchable_url \
+answers only whether a peer is addressable; every evidence policy, including \
+caps, sanitization, and recoverability, belongs to the consumer."""
+rationale = """
+Keeping persisted identity out of this package lets the wire capability \
+change with its own version without silently rewriting stored records. A \
+consumer that derives its literals from these names would drift the moment \
+this package renamed one."""
+date = "2026-08-11"
+check = "uv run pytest -q tests/test_package.py tests/test_headers.py"
+
+[[contracts]]
+title = "One bounded client owns a two-phase drain to a terminal close"
+statement = """
+Each BoundedHttpClient owns one long-lived synchronous client with explicit \
+connection and keep-alive limits and reuses it across calls. A clean close is \
+two-phase: it stops offload admission, drains offloaded work, stops work \
+admission, drains admitted work, shuts down any created executor, closes the \
+underlying client exactly once, and leaves the client terminal. Work \
+admission stays open to every caller, on any thread, until the offload drain \
+finishes, so draining work can complete its units. An exception escaping \
+either drain wait aborts the close: the client still becomes terminal, \
+admission stays permanently refused so no later caller blocks on a closer \
+that no longer exists, and the executor and underlying client are released \
+without joining workers. An aborted close makes no claim that the drain \
+completed, and only the closing thread owning the drain aborts this way. \
+Concurrent closers wait for the terminal state and return."""
+rationale = """
+One bounded owned lifecycle preserves pooling and makes shutdown auditable. \
+Draining offloaded work before admitted work lets work running on the \
+client's own executor finish rather than fail at shutdown. A terminal aborted \
+close keeps an interrupt from stranding sockets, worker threads, and every \
+subsequent closer."""
+date = "2026-08-11"
+check = "uv run pytest -q tests/test_lifecycle.py"
+
+[[contracts]]
+title = "Offload is bounded by the connection limit and is not reentrant"
+statement = """
+The executor is created on first offload and sized from the config's \
+max_connections, the same value bounding the connection pool, and there is no \
+separate worker-count knob. Each offload holds the drain open exactly once, \
+whether its work returns, raises, is cancelled while queued, or fails to be \
+submitted at all. Offloaded work must not close or offload on the client \
+running it: closing from inside offloaded work waits on that same work, and \
+offloaded work blocking on a nested offload starves once every worker is held \
+that way. Honoring that restriction is the caller's obligation."""
+rationale = """
+Deriving worker count from the connection limit makes thread count and pool \
+size unable to disagree. A single release per offload is what makes the drain \
+terminate rather than hang or close early. Naming the reentrancy restriction \
+keeps a bounded executor from being read as a general-purpose reentrant work \
+queue."""
+date = "2026-08-11"
+check = "uv run pytest -q tests/test_lifecycle.py"
+
+[[contracts]]
+title = "Admission is the caller's unit of work, not one wire call"
+statement = """
+call takes no admission of its own; it runs inside admit() or inside \
+offloaded work. A caller wraps one complete operation in admit(), so a clean \
+close drains complete operations rather than individual wire calls. admit() \
+releases its hold when its body completes or raises, and refuses admission \
+with a RuntimeError once the work drain has begun."""
+rationale = """
+The client cannot know what a caller considers one operation; a caller whose \
+operation spans several wire calls needs close to drain the whole operation. \
+Leaving admission to the caller makes that unit explicit rather than assumed."""
+date = "2026-08-11"
+check = "uv run pytest -q tests/test_lifecycle.py"
