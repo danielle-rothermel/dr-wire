@@ -62,7 +62,9 @@ with BoundedHttpClient(config) as client:
 - `call(request)` is total for wire-level problems: it returns a
   `WireResponse` or a `WireFailure` and never raises for a timeout, a
   connection failure, a protocol violation, a refused byte bound, or an
-  unrecognized `httpx` error. Anything it does raise is a defect of this
+  unrecognized `httpx` error. Calling once the work drain has begun raises
+  `RuntimeError`, since reaching a closed client is a caller-lifecycle error
+  rather than a wire condition; anything else it raises is a defect of this
   package. Every HTTP status, redirects included, comes back as a
   `WireResponse`; redirects are never followed and status meaning belongs to
   the caller.

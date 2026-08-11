@@ -51,6 +51,7 @@ class _ClientState(Enum):
 _CLOSING_STATES = frozenset(
     {_ClientState.DRAINING_OFFLOADS, _ClientState.CLOSING}
 )
+_USABLE_STATES = frozenset({_ClientState.OPEN, _ClientState.DRAINING_OFFLOADS})
 
 
 def _operational_timeout_seconds(timeout_seconds: float) -> float:
@@ -306,12 +307,20 @@ class BoundedHttpClient:
             if self._active_offloads == 0:
                 self._condition.notify_all()
 
+    def _require_usable(self) -> None:
+        """Refuse a caller once the work drain has begun.
+
+        The same predicate governs admission and dispatch, so a caller
+        that reaches the client too late always sees this package's own
+        message rather than the underlying client's.
+        """
+        with self._condition:
+            if self._state not in _USABLE_STATES:
+                raise RuntimeError(CLOSING_OR_CLOSED_MSG)
+
     def _begin_work(self) -> None:
         with self._condition:
-            if self._state not in (
-                _ClientState.OPEN,
-                _ClientState.DRAINING_OFFLOADS,
-            ):
+            if self._state not in _USABLE_STATES:
                 raise RuntimeError(CLOSING_OR_CLOSED_MSG)
             self._active_work += 1
 
@@ -336,8 +345,13 @@ class BoundedHttpClient:
 
         ``call`` takes no admission of its own. It runs inside
         ``admit()`` or inside offloaded work, so the caller decides what
-        unit of work a close must drain.
+        unit of work a close must drain. Calling once the work drain has
+        begun is a caller-lifecycle error rather than a wire condition,
+        so it raises the client's own ``RuntimeError`` instead of
+        returning a ``WireFailure`` or surfacing the underlying client's
+        message.
         """
+        self._require_usable()
         if len(request.body) > self._config.max_request_bytes:
             return WireFailure(
                 kind=WireFailureKind.REQUEST_TOO_LARGE,
@@ -366,6 +380,7 @@ class BoundedHttpClient:
                         message=RESPONSE_TOO_LARGE_MESSAGE,
                         traceback="",
                         observed_bytes=observed_bytes,
+                        retry_after=retry_after,
                     )
                 return WireResponse(
                     status_code=http_response.status_code,

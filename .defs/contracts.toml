@@ -27,15 +27,22 @@ failures, protocol violations, an undispatchable URL rejected at dispatch, \
 and any unrecognized httpx error all arrive as a WireFailure carrying its \
 kind, the originating exception type, a static summary message, and a full \
 traceback. Summary messages stay static and never embed peer-controlled \
-detail. Anything else escaping call is a defect of this package and crashes \
-loudly rather than being reported as a wire condition. The request bound is \
-checked before dispatch and the response bound while streaming, so a refused \
-body is never fully read; both refusals report observed_bytes."""
+detail. Calling once the work drain has begun raises this package's own \
+RuntimeError, because reaching a closed client is a caller-lifecycle error \
+rather than a wire condition. Anything else escaping call is a defect of this \
+package and crashes loudly rather than being reported as a wire condition. \
+The request bound is checked before dispatch and the response bound while \
+streaming, so a refused body is never fully read; both refusals report \
+observed_bytes, and a body refused for size still reports the Retry-After \
+hint its response head carried."""
 rationale = """
 A total wire call lets a consumer keep every transport condition inside its \
 own typed reporting instead of catching transport exceptions. Reserving \
 raised exceptions for defects keeps a bug in this package from being \
-misreported as a failure of the peer."""
+misreported as a failure of the peer, and one refusal message for every \
+closed-client path keeps a lifecycle error from arriving as an unrecognized \
+transport message. A size refusal that discarded the hint would lose the one \
+piece of peer guidance the exchange did deliver."""
 date = "2026-08-11"
 check = "uv run pytest -q tests/test_call.py"
 

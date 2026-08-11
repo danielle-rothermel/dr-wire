@@ -17,8 +17,11 @@ and this project adheres to
   drain to a terminal close, an `admit()` context manager holding one unit of
   caller work against that drain, an `offload()` executor sized from
   `max_connections`, and a `call()` that is total for every wire-level
-  condition.
+  condition and refuses a closed client with the package's own
+  `RuntimeError`.
 - `WireRequest`, `WireResponse`, `WireFailure`, and the closed
-  `WireFailureKind` taxonomy describing one wire exchange as values.
+  `WireFailureKind` taxonomy describing one wire exchange as values. A body
+  refused for size reports both the bytes observed and the `Retry-After`
+  hint its response head carried.
 - `parse_retry_after` and `is_dispatchable_url` as pure, uncapped, total
   parsing helpers.

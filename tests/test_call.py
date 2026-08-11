@@ -9,7 +9,11 @@ import pytest
 from _support import OK_BODY, make_client, make_config, make_request
 
 from dr_http import WireFailure, WireFailureKind, WireResponse
-from dr_http.client import _httpx_timeout
+from dr_http.client import (
+    CLOSING_OR_CLOSED_MSG,
+    RESPONSE_STREAM_CHUNK_BYTES,
+    _httpx_timeout,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -97,73 +101,141 @@ def test_a_retry_after_header_is_parsed_onto_the_response() -> None:
     assert result.retry_after.value == 12
 
 
+def test_a_body_refused_for_size_still_reports_its_retry_after() -> None:
+    """The one refusal that saw a response head keeps the peer's hint."""
+    result = make_client(
+        lambda _request: httpx.Response(
+            429, headers={"retry-after": "12"}, stream=ByteChunks(OK_BODY)
+        ),
+        max_response_bytes=1,
+    ).call(make_request())
+
+    assert isinstance(result, WireFailure)
+    assert result.kind is WireFailureKind.RESPONSE_TOO_LARGE
+    assert result.retry_after is not None
+    assert result.retry_after.kind == "delta_seconds"
+    assert result.retry_after.value == 12
+
+
+def test_a_refusal_with_no_response_head_reports_no_retry_after() -> None:
+    refused = make_client(max_request_bytes=1).call(make_request())
+    failed = make_client(_raising(httpx.ConnectError("down"))).call(
+        make_request()
+    )
+
+    assert isinstance(refused, WireFailure)
+    assert isinstance(failed, WireFailure)
+    assert refused.retry_after is None
+    assert failed.retry_after is None
+
+
+def test_call_on_a_closed_client_raises_this_packages_own_message() -> None:
+    """A closed client is a caller error, not an httpx-internal one."""
+    client = make_client()
+    client.close()
+
+    with pytest.raises(RuntimeError, match=CLOSING_OR_CLOSED_MSG):
+        client.call(make_request())
+
+
+ERROR_KINDS: list[tuple[str, BaseException, WireFailureKind]] = [
+    (
+        "pool-timeout",
+        httpx.PoolTimeout("pool starved"),
+        WireFailureKind.POOL_TIMEOUT,
+    ),
+    (
+        "read-timeout",
+        httpx.ReadTimeout("idle stall"),
+        WireFailureKind.STALLED_RESPONSE,
+    ),
+    (
+        "connect-timeout",
+        httpx.ConnectTimeout("slow connect"),
+        WireFailureKind.TIMEOUT,
+    ),
+    (
+        "write-timeout",
+        httpx.WriteTimeout("slow write"),
+        WireFailureKind.TIMEOUT,
+    ),
+    ("invalid-url", httpx.InvalidURL("rejected"), WireFailureKind.INVALID_URL),
+    (
+        "connect-error",
+        httpx.ConnectError("down"),
+        WireFailureKind.CONNECT_ERROR,
+    ),
+    (
+        "read-error",
+        httpx.ReadError("read failed"),
+        WireFailureKind.NETWORK_ERROR,
+    ),
+    (
+        "write-error",
+        httpx.WriteError("write failed"),
+        WireFailureKind.NETWORK_ERROR,
+    ),
+    (
+        "close-error",
+        httpx.CloseError("close failed"),
+        WireFailureKind.NETWORK_ERROR,
+    ),
+    (
+        "proxy-error",
+        httpx.ProxyError("proxy down"),
+        WireFailureKind.NETWORK_ERROR,
+    ),
+    (
+        "remote-protocol",
+        httpx.RemoteProtocolError("server disconnected"),
+        WireFailureKind.REMOTE_PROTOCOL_ERROR,
+    ),
+    (
+        "local-protocol",
+        httpx.LocalProtocolError("bad framing"),
+        WireFailureKind.LOCAL_PROTOCOL_ERROR,
+    ),
+    (
+        "bare-protocol",
+        httpx.ProtocolError("bare protocol error"),
+        WireFailureKind.LOCAL_PROTOCOL_ERROR,
+    ),
+    (
+        "decoding",
+        httpx.DecodingError("bad encoding"),
+        WireFailureKind.LOCAL_PROTOCOL_ERROR,
+    ),
+    (
+        "unsupported-protocol",
+        httpx.UnsupportedProtocol("bad scheme"),
+        WireFailureKind.LOCAL_PROTOCOL_ERROR,
+    ),
+    (
+        "too-many-redirects",
+        httpx.TooManyRedirects("too many"),
+        WireFailureKind.LOCAL_PROTOCOL_ERROR,
+    ),
+    (
+        "http-status-error",
+        httpx.HTTPStatusError(
+            "raised status",
+            request=httpx.Request("POST", "https://example.test"),
+            response=httpx.Response(500),
+        ),
+        WireFailureKind.UNKNOWN,
+    ),
+    (
+        "bare-http-error",
+        httpx.HTTPError("bare http error"),
+        WireFailureKind.UNKNOWN,
+    ),
+]
+
+
 @pytest.mark.parametrize(
     ("error", "expected_kind"),
-    [
-        (httpx.PoolTimeout("pool starved"), WireFailureKind.POOL_TIMEOUT),
-        (httpx.ReadTimeout("idle stall"), WireFailureKind.STALLED_RESPONSE),
-        (httpx.ConnectTimeout("slow connect"), WireFailureKind.TIMEOUT),
-        (httpx.WriteTimeout("slow write"), WireFailureKind.TIMEOUT),
-        (httpx.InvalidURL("rejected"), WireFailureKind.INVALID_URL),
-        (httpx.ConnectError("down"), WireFailureKind.CONNECT_ERROR),
-        (httpx.ReadError("read failed"), WireFailureKind.NETWORK_ERROR),
-        (httpx.WriteError("write failed"), WireFailureKind.NETWORK_ERROR),
-        (httpx.CloseError("close failed"), WireFailureKind.NETWORK_ERROR),
-        (httpx.ProxyError("proxy down"), WireFailureKind.NETWORK_ERROR),
-        (
-            httpx.RemoteProtocolError("server disconnected"),
-            WireFailureKind.REMOTE_PROTOCOL_ERROR,
-        ),
-        (
-            httpx.LocalProtocolError("bad framing"),
-            WireFailureKind.LOCAL_PROTOCOL_ERROR,
-        ),
-        (
-            httpx.ProtocolError("bare protocol error"),
-            WireFailureKind.LOCAL_PROTOCOL_ERROR,
-        ),
-        (
-            httpx.DecodingError("bad encoding"),
-            WireFailureKind.LOCAL_PROTOCOL_ERROR,
-        ),
-        (
-            httpx.UnsupportedProtocol("bad scheme"),
-            WireFailureKind.LOCAL_PROTOCOL_ERROR,
-        ),
-        (
-            httpx.TooManyRedirects("too many"),
-            WireFailureKind.LOCAL_PROTOCOL_ERROR,
-        ),
-        (
-            httpx.HTTPStatusError(
-                "raised status",
-                request=httpx.Request("POST", "https://example.test"),
-                response=httpx.Response(500),
-            ),
-            WireFailureKind.UNKNOWN,
-        ),
-        (httpx.HTTPError("bare http error"), WireFailureKind.UNKNOWN),
-    ],
-    ids=(
-        "pool-timeout",
-        "read-timeout",
-        "connect-timeout",
-        "write-timeout",
-        "invalid-url",
-        "connect-error",
-        "read-error",
-        "write-error",
-        "close-error",
-        "proxy-error",
-        "remote-protocol",
-        "local-protocol",
-        "bare-protocol",
-        "decoding",
-        "unsupported-protocol",
-        "too-many-redirects",
-        "http-status-error",
-        "bare-http-error",
-    ),
+    [(error, kind) for _id, error, kind in ERROR_KINDS],
+    ids=[case_id for case_id, _error, _kind in ERROR_KINDS],
 )
 def test_every_httpx_error_maps_to_a_kind_without_raising(
     error: BaseException, expected_kind: WireFailureKind
@@ -196,29 +268,29 @@ def test_summary_messages_stay_static_and_name_the_phase() -> None:
 
 
 def test_every_failure_kind_is_reachable() -> None:
-    """No kind names a condition the client cannot actually produce."""
-    reached = {
-        WireFailureKind.INVALID_URL,
-        WireFailureKind.CONNECT_ERROR,
-        WireFailureKind.NETWORK_ERROR,
-        WireFailureKind.REMOTE_PROTOCOL_ERROR,
-        WireFailureKind.LOCAL_PROTOCOL_ERROR,
-        WireFailureKind.TIMEOUT,
-        WireFailureKind.STALLED_RESPONSE,
-        WireFailureKind.POOL_TIMEOUT,
-        WireFailureKind.UNKNOWN,
-    }
-    too_large = {
-        make_client(max_request_bytes=1).call(make_request()),
-        make_client(
-            lambda _request: httpx.Response(200, content=OK_BODY),
-            max_response_bytes=1,
-        ).call(make_request()),
-    }
+    """No kind names a condition the client cannot actually produce.
 
-    for result in too_large:
+    Every kind here is collected from a real ``call`` result rather than
+    written down, so a kind that stops being producible fails this test
+    instead of being asserted into existence.
+    """
+    reached: set[WireFailureKind] = set()
+    for _case_id, error, _expected_kind in ERROR_KINDS:
+        result = make_client(_raising(error)).call(make_request())
         assert isinstance(result, WireFailure)
         reached.add(result.kind)
+
+    request_refusal = make_client(max_request_bytes=1).call(make_request())
+    response_refusal = make_client(
+        lambda _request: httpx.Response(200, content=OK_BODY),
+        max_response_bytes=1,
+    ).call(make_request())
+
+    assert isinstance(request_refusal, WireFailure)
+    assert isinstance(response_refusal, WireFailure)
+    assert request_refusal.kind is WireFailureKind.REQUEST_TOO_LARGE
+    assert response_refusal.kind is WireFailureKind.RESPONSE_TOO_LARGE
+    reached |= {request_refusal.kind, response_refusal.kind}
 
     assert reached == set(WireFailureKind)
 
@@ -283,6 +355,45 @@ def test_the_response_bound_is_exact_and_stops_streaming(
         assert stream.yielded == len(OK_BODY)
 
 
+def test_the_response_is_read_one_bounded_chunk_at_a_time() -> None:
+    """The refusal overshoot is bounded by one chunk, not by body size.
+
+    ByteChunks elsewhere yields single bytes, which hides the chunk size
+    the memory bound depends on, so the granularity is pinned here
+    against the real reader. The literal is pinned alongside it because
+    raising it raises how much a caller buffers past the limit before
+    the body is refused.
+    """
+    assert RESPONSE_STREAM_CHUNK_BYTES == 64 * 1024
+
+    requested: list[int | None] = []
+    over_limit = RESPONSE_STREAM_CHUNK_BYTES * 4
+    limit = 1
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * over_limit)
+
+    client = make_client(handler, max_response_bytes=limit)
+    original = httpx.Response.iter_bytes
+
+    def recording(
+        self: httpx.Response, chunk_size: int | None = None
+    ) -> Iterator[bytes]:
+        requested.append(chunk_size)
+        return original(self, chunk_size=chunk_size)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(httpx.Response, "iter_bytes", recording)
+        result = client.call(make_request())
+
+    assert requested[-1] == RESPONSE_STREAM_CHUNK_BYTES
+    assert isinstance(result, WireFailure)
+    assert result.kind is WireFailureKind.RESPONSE_TOO_LARGE
+    assert result.observed_bytes is not None
+    assert result.observed_bytes <= limit + RESPONSE_STREAM_CHUNK_BYTES
+    assert result.observed_bytes < over_limit
+
+
 def test_a_missing_content_length_does_not_truncate_the_body() -> None:
     stream = ByteChunks(OK_BODY)
     result = make_client(
@@ -312,22 +423,61 @@ def test_the_response_bound_applies_to_decompressed_bytes() -> None:
     assert result.observed_bytes > len(OK_BODY) - 1
 
 
-def test_a_defect_after_dispatch_crashes_rather_than_reporting_a_kind() -> (
+def test_a_defect_before_dispatch_crashes_rather_than_reporting_a_kind() -> (
     None
 ):
     """Our own defect must not be reported as a wire condition."""
 
     class BrokenStreamClient(httpx.Client):
         def stream(self, *_args: Any, **_kwargs: Any) -> Any:
-            msg = "defect while reading the sent response"
+            msg = "defect before the request was dispatched"
             raise ValueError(msg)
 
     client = make_client(
         client=BrokenStreamClient(transport=httpx.MockTransport(ok_response))
     )
 
+    with pytest.raises(ValueError, match="defect before the request"):
+        client.call(make_request())
+
+
+class _DefectiveStream(httpx.SyncByteStream):
+    """Send part of a body, then fail the way a defect of ours would."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    def __iter__(self) -> Iterator[bytes]:
+        yield b"partial"
+        raise self._error
+
+
+def test_a_defect_after_dispatch_crashes_rather_than_reporting_a_kind() -> (
+    None
+):
+    """A defect raised mid-body is ours, so it must escape call()."""
+    defect = ValueError("defect while reading the sent response")
+    client = make_client(
+        lambda _request: httpx.Response(200, stream=_DefectiveStream(defect))
+    )
+
     with pytest.raises(ValueError, match="defect while reading"):
         client.call(make_request())
+
+
+def test_a_wire_error_after_dispatch_is_still_reported_as_a_kind() -> None:
+    """A mid-body transport failure is the peer's, so it stays a value."""
+    client = make_client(
+        lambda _request: httpx.Response(
+            200, stream=_DefectiveStream(httpx.ReadError("connection lost"))
+        )
+    )
+
+    result = client.call(make_request())
+
+    assert isinstance(result, WireFailure)
+    assert result.kind is WireFailureKind.NETWORK_ERROR
+    assert result.exception_type == "ReadError"
 
 
 def ok_response(_request: httpx.Request) -> httpx.Response:
