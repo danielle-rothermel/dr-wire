@@ -1,0 +1,17 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=512", "--enforce-all"]
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+  - repo: local
+    hooks:
+      - id: pre-check
+        name: pre-check
+        entry: scripts/pre-check.sh
+        language: system
+        pass_filenames: false

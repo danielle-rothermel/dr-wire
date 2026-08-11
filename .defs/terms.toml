@@ -1,0 +1,3 @@
+#:schema ./terms.schema.json
+
+terms = []
