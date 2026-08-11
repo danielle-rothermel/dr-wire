@@ -21,7 +21,9 @@ and this project adheres to
   `RuntimeError`.
 - `WireRequest`, `WireResponse`, `WireFailure`, and the closed
   `WireFailureKind` taxonomy describing one wire exchange as values. A body
-  refused for size reports both the bytes observed and the `Retry-After`
-  hint its response head carried.
+  refused for size reports the bytes observed and both the parsed
+  `Retry-After` hint its response head carried and that header's raw value,
+  so a consumer whose retention policy bounds the header itself can apply the
+  same rule on this path as on a response.
 - `parse_retry_after` and `is_dispatchable_url` as pure, uncapped, total
   parsing helpers.

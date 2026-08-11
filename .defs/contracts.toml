@@ -34,7 +34,8 @@ package and crashes loudly rather than being reported as a wire condition. \
 The request bound is checked before dispatch and the response bound while \
 streaming, so a refused body is never fully read; both refusals report \
 observed_bytes, and a body refused for size still reports the Retry-After \
-hint its response head carried."""
+hint its response head carried, alongside that header's raw value so a \
+consumer bounding the header itself can apply one rule on both paths."""
 rationale = """
 A total wire call lets a consumer keep every transport condition inside its \
 own typed reporting instead of catching transport exceptions. Reserving \

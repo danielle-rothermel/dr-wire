@@ -369,9 +369,8 @@ class BoundedHttpClient:
                 timeout=_httpx_timeout(self._config),
                 follow_redirects=False,
             ) as http_response:
-                retry_after = parse_retry_after(
-                    http_response.headers.get("retry-after")
-                )
+                retry_after_header = http_response.headers.get("retry-after")
+                retry_after = parse_retry_after(retry_after_header)
                 body, observed_bytes = self._read_response(http_response)
                 if body is None:
                     return WireFailure(
@@ -381,6 +380,7 @@ class BoundedHttpClient:
                         traceback="",
                         observed_bytes=observed_bytes,
                         retry_after=retry_after,
+                        retry_after_header=retry_after_header,
                     )
                 return WireResponse(
                     status_code=http_response.status_code,

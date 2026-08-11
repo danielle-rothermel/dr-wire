@@ -114,10 +114,13 @@ class WireFailure:
     ``observed_bytes`` as ``None`` because no complete body size was
     ever established.
 
-    ``retry_after`` is populated only when a response head arrived and
-    the body was then refused for size, which is the one failure that
-    still saw the peer's headers. Every other kind leaves it ``None``
-    because no response head was ever received.
+    ``retry_after`` and ``retry_after_header`` are populated only when a
+    response head arrived and the body was then refused for size, which
+    is the one failure that still saw the peer's headers. Every other
+    kind leaves both ``None`` because no response head was ever
+    received. The raw header travels beside the parsed value so a
+    consumer whose retention policy bounds the header itself can apply
+    the same rule here as on a response.
     """
 
     kind: WireFailureKind
@@ -126,3 +129,4 @@ class WireFailure:
     traceback: str
     observed_bytes: int | None = None
     retry_after: ParsedRetryAfter | None = None
+    retry_after_header: str | None = None

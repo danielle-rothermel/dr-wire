@@ -102,10 +102,16 @@ def test_a_retry_after_header_is_parsed_onto_the_response() -> None:
 
 
 def test_a_body_refused_for_size_still_reports_its_retry_after() -> None:
-    """The one refusal that saw a response head keeps the peer's hint."""
+    """The one refusal that saw a response head keeps the peer's hint.
+
+    The raw header travels beside the parsed value so a consumer whose
+    retention policy bounds the header itself can apply that rule on
+    this path exactly as it does on a response.
+    """
+    header = " " * 200 + "12"
     result = make_client(
         lambda _request: httpx.Response(
-            429, headers={"retry-after": "12"}, stream=ByteChunks(OK_BODY)
+            429, headers={"retry-after": header}, stream=ByteChunks(OK_BODY)
         ),
         max_response_bytes=1,
     ).call(make_request())
@@ -115,6 +121,7 @@ def test_a_body_refused_for_size_still_reports_its_retry_after() -> None:
     assert result.retry_after is not None
     assert result.retry_after.kind == "delta_seconds"
     assert result.retry_after.value == 12
+    assert result.retry_after_header == header
 
 
 def test_a_refusal_with_no_response_head_reports_no_retry_after() -> None:
@@ -126,7 +133,9 @@ def test_a_refusal_with_no_response_head_reports_no_retry_after() -> None:
     assert isinstance(refused, WireFailure)
     assert isinstance(failed, WireFailure)
     assert refused.retry_after is None
+    assert refused.retry_after_header is None
     assert failed.retry_after is None
+    assert failed.retry_after_header is None
 
 
 def test_call_on_a_closed_client_raises_this_packages_own_message() -> None:
