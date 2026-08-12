@@ -80,6 +80,23 @@ def test_parse_retry_after_applies_no_caps() -> None:
 
 
 @pytest.mark.parametrize(
+    "header",
+    ["9" * 5000, "Fri, 31 Dec 9999 23:59:59 -1400"],
+    ids=("past-int-digit-limit", "year-overflows-utc-shift"),
+)
+def test_parse_retry_after_is_total_over_unconvertible_values(
+    header: str,
+) -> None:
+    """A value the interpreter refuses to convert is unparseable, not fatal.
+
+    ``int`` refuses a digit string past ``sys.get_int_max_str_digits``
+    and shifting year 9999 to UTC overflows, so both escape the parse as
+    exceptions unless the conversions are guarded.
+    """
+    assert parse_retry_after(header) is None
+
+
+@pytest.mark.parametrize(
     "url",
     [
         "https://example.test",

@@ -9,7 +9,10 @@ timeout larger than the general timeout is rejected rather than clamped. Each \
 wire request runs directly under native connect, read, write, and pool \
 timeouts derived from the config, each saturated at threading.TIMEOUT_MAX. \
 Native phase timeouts do not bound the total wall-clock duration of a slow \
-response that continues to produce bytes."""
+response that continues to produce bytes. The response byte limit bounds \
+retained decoded bytes: a compressed body is decoded one raw transport chunk \
+at a time before the limit is applied, so transient decode memory for a \
+single raw chunk exceeds the limit by up to the codec's expansion ratio."""
 rationale = """
 Requiring every bound makes an unsized client impossible to construct. \
 Rejecting rather than clamping keeps the client from silently enforcing a \
@@ -35,7 +38,11 @@ The request bound is checked before dispatch and the response bound while \
 streaming, so a refused body is never fully read; both refusals report \
 observed_bytes, and a body refused for size still reports the Retry-After \
 hint its response head carried, alongside that header's raw value so a \
-consumer bounding the header itself can apply one rule on both paths."""
+consumer bounding the header itself can apply one rule on both paths. A \
+completed exchange outranks cleanup noise: once a response or a size refusal \
+is determined, a wire error raised while closing the response stream is \
+suppressed and the determined result is returned, while a wire error raised \
+before any result exists is translated as usual."""
 rationale = """
 A total wire call lets a consumer keep every transport condition inside its \
 own typed reporting instead of catching transport exceptions. Reserving \
@@ -70,7 +77,11 @@ values only. A consumer that records a wire outcome maps these values into \
 its own vocabulary at its own boundary and pins its own literals. \
 parse_retry_after applies no magnitude or length cap and is_dispatchable_url \
 answers only whether a peer is addressable; every evidence policy, including \
-caps, sanitization, and recoverability, belongs to the consumer."""
+caps, sanitization, and recoverability, belongs to the consumer. Both are \
+total over peer-controlled input: a value the interpreter itself cannot \
+convert, such as a digit string past the integer-conversion digit limit or a \
+date whose year cannot be shifted to UTC, is unparseable rather than \
+raising."""
 rationale = """
 Keeping persisted identity out of this package lets the wire capability \
 change with its own version without silently rewriting stored records. A \

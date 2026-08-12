@@ -24,21 +24,35 @@ def parse_retry_after(header_value: str | None) -> ParsedRetryAfter | None:
     How far a hint may reach before it stops being credible is an
     evidence policy, so the caller applies its own caps to the parsed
     result.
+
+    Totality holds over every peer-controlled value, including ones the
+    interpreter itself refuses to convert: a digit string longer than
+    the integer-conversion digit limit and a date whose year cannot be
+    shifted to UTC both yield ``None`` rather than raising.
     """
     if header_value is None:
         return None
     normalized = header_value.strip()
     if normalized.isascii() and normalized.isdigit():
-        return ParsedRetryAfter(kind="delta_seconds", value=int(normalized))
+        try:
+            return ParsedRetryAfter(
+                kind="delta_seconds", value=int(normalized)
+            )
+        except ValueError:
+            # Python caps int(str) at sys.get_int_max_str_digits, so a
+            # long enough all-digit header is unconvertible rather than
+            # merely large.
+            return None
     try:
         parsed = parsedate_to_datetime(normalized)
+        normalized_to_utc = parsed.astimezone(UTC)
     except (TypeError, ValueError, OverflowError):
         return None
     if parsed.tzinfo is None:
         return None
     return ParsedRetryAfter(
         kind="http_date",
-        value=format_datetime(parsed.astimezone(UTC), usegmt=True),
+        value=format_datetime(normalized_to_utc, usegmt=True),
     )
 
 

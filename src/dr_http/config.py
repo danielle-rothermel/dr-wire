@@ -33,6 +33,21 @@ _COUNT_FIELDS = (
 )
 
 
+def _is_finite_positive(value: float) -> bool:
+    """Report whether this number is a usable positive finite timeout.
+
+    An integer too large to convert to a float is not finite as a
+    timeout, so it fails here rather than escaping as an ``OverflowError``
+    from the finiteness test: this validator raises its own error for
+    every value it rejects.
+    """
+    try:
+        finite = math.isfinite(value)
+    except OverflowError:
+        return False
+    return finite and value > 0
+
+
 @dataclass(frozen=True, slots=True)
 class HttpClientConfig:
     """Bound every resource one client may consume, with no defaults.
@@ -69,7 +84,7 @@ class HttpClientConfig:
             if not isinstance(value, float | int) or isinstance(value, bool):
                 msg = f"{field_name} must be a real number"
                 raise TypeError(msg)
-            if not math.isfinite(value) or value <= 0:
+            if not _is_finite_positive(value):
                 msg = f"{field_name} must be positive and finite"
                 raise ValueError(msg)
         for field_name in _COUNT_FIELDS:

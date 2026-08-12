@@ -107,6 +107,20 @@ def test_phase_timeouts_are_rejected_rather_than_clamped(
     assert getattr(make_config(**within), field_name) == 10.0
 
 
+@pytest.mark.parametrize("field_name", _TIMEOUT_FIELDS)
+def test_a_timeout_too_large_for_a_float_is_this_validators_error(
+    field_name: str,
+) -> None:
+    """An unconvertible int fails validation with this validator's error.
+
+    ``math.isfinite`` raises ``OverflowError`` on an int too large to
+    convert to a float, so without a guard the config crashes with an
+    exception it never chose instead of naming the offending field.
+    """
+    with pytest.raises(ValueError, match=f"{field_name} must be positive"):
+        make_config(**{field_name: 10**1000})
+
+
 def test_very_large_finite_timeouts_are_accepted_unmodified() -> None:
     config = make_config(
         timeout_seconds=1e300,

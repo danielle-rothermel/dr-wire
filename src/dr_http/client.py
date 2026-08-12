@@ -64,6 +64,53 @@ class _BodyRefusedForSize:
     observed_bytes: int
 
 
+def _decoded_chunks(http_response: httpx.Response) -> Iterator[bytes]:
+    """Yield decoded body bytes, keeping a whole body whole.
+
+    The underlying client's decoded iterator releases the connection
+    from inside itself once the body ends, so a release that fails there
+    raises out of the same step that would have delivered the final
+    decoded bytes, and the bytes it withheld die with that generator's
+    frame. Iterating raw transport chunks and decoding them here keeps
+    every decoded byte in this frame, so a failing release after the
+    last byte is cleanup noise about a body already read whole rather
+    than a silent truncation. A failure before the last byte propagates.
+
+    A response the underlying client already buffered exposes no raw
+    stream to iterate and has nothing left to release, so its content is
+    yielded directly.
+    """
+    if hasattr(http_response, "_content"):
+        yield http_response.content
+        return
+
+    decoder = http_response._get_content_decoder()
+    raw_chunks = http_response.iter_raw(chunk_size=RESPONSE_STREAM_CHUNK_BYTES)
+    while True:
+        try:
+            raw_chunk = next(raw_chunks)
+        except StopIteration:
+            break
+        except httpx.HTTPError:
+            if not _body_is_complete(http_response):
+                raise
+            break
+        yield decoder.decode(raw_chunk)
+    yield decoder.flush()
+
+
+def _body_is_complete(http_response: httpx.Response) -> bool:
+    """Report whether the body was read whole before this error.
+
+    The underlying client marks the response closed as it begins
+    releasing the connection, which it does only once the body iterator
+    is exhausted. So a wire error carrying this flag was raised while
+    releasing a body already read whole, while a mid-body error leaves
+    it unset.
+    """
+    return http_response.is_closed
+
+
 def _saturate(seconds: float) -> float:
     return min(seconds, threading.TIMEOUT_MAX)
 
@@ -359,34 +406,53 @@ class BoundedHttpClient:
 
         Every failure this produces is a refused response bound; a wire
         exception raised here reaches ``call`` for translation.
+
+        A completed exchange outranks cleanup noise. Once the result is
+        determined, closing the response stream can no longer change what
+        happened on the wire, so a wire error raised by that close is
+        suppressed and the determined result is returned. Reporting it
+        instead would discard the exchange's real outcome, including the
+        Retry-After hint a size refusal preserves. Before a result
+        exists, nothing has been determined, so every exception
+        propagates to ``call`` for translation exactly as it does
+        mid-body.
         """
-        with self._client.stream(
-            request.method,
-            request.url,
-            content=request.body,
-            headers=dict(request.headers),
-            timeout=_httpx_timeout(self._config),
-            follow_redirects=False,
-        ) as http_response:
-            retry_after_header = http_response.headers.get(RETRY_AFTER_HEADER)
-            retry_after = parse_retry_after(retry_after_header)
-            body = self._read_response(http_response)
-            if isinstance(body, _BodyRefusedForSize):
-                return WireFailure(
-                    kind=WireFailureKind.RESPONSE_TOO_LARGE,
-                    exception_type="",
-                    message=WireFailureMessage.RESPONSE_TOO_LARGE,
-                    traceback="",
-                    observed_bytes=body.observed_bytes,
-                    retry_after=retry_after,
-                    retry_after_header=retry_after_header,
+        result: WireResponse | WireFailure | None = None
+        try:
+            with self._client.stream(
+                request.method,
+                request.url,
+                content=request.body,
+                headers=dict(request.headers),
+                timeout=_httpx_timeout(self._config),
+                follow_redirects=False,
+            ) as http_response:
+                retry_after_header = http_response.headers.get(
+                    RETRY_AFTER_HEADER
                 )
-            return WireResponse(
-                status_code=http_response.status_code,
-                headers=dict(http_response.headers),
-                body=body,
-                retry_after=retry_after,
-            )
+                retry_after = parse_retry_after(retry_after_header)
+                body = self._read_response(http_response)
+                if isinstance(body, _BodyRefusedForSize):
+                    result = WireFailure(
+                        kind=WireFailureKind.RESPONSE_TOO_LARGE,
+                        exception_type="",
+                        message=WireFailureMessage.RESPONSE_TOO_LARGE,
+                        traceback="",
+                        observed_bytes=body.observed_bytes,
+                        retry_after=retry_after,
+                        retry_after_header=retry_after_header,
+                    )
+                else:
+                    result = WireResponse(
+                        status_code=http_response.status_code,
+                        headers=dict(http_response.headers),
+                        body=body,
+                        retry_after=retry_after,
+                    )
+        except httpx.HTTPError:
+            if result is None:
+                raise
+        return result
 
     def _read_response(
         self, http_response: httpx.Response
@@ -396,12 +462,25 @@ class BoundedHttpClient:
         The bound applies to decompressed bytes, which is what a caller
         must hold in memory, and the stream stops at the first chunk
         that crosses it rather than reading the rest.
+
+        The bound governs retained bytes. The underlying client
+        decompresses each raw transport chunk in full before this loop
+        sees any decoded output, so transient decode memory for a single
+        raw chunk exceeds the bound by up to the codec's expansion
+        ratio.
+
+        Decoded chunks come from ``_decoded_chunks`` rather than from the
+        underlying client's decoded iterator, because that iterator
+        releases the connection from inside itself once the body ends
+        and withholds a partial trailing chunk until it does. A release
+        that fails there would discard those final bytes, returning a
+        silently truncated body as though it were whole. A wire error
+        raised while the body is still arriving leaves it genuinely
+        incomplete, so it propagates for translation.
         """
         body = bytearray()
         observed_bytes = 0
-        for chunk in http_response.iter_bytes(
-            chunk_size=RESPONSE_STREAM_CHUNK_BYTES
-        ):
+        for chunk in _decoded_chunks(http_response):
             observed_bytes += len(chunk)
             if observed_bytes > self._config.max_response_bytes:
                 return _BodyRefusedForSize(observed_bytes=observed_bytes)

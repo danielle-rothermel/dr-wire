@@ -18,7 +18,11 @@ and this project adheres to
   caller work against that drain, an `offload()` executor sized from
   `max_connections`, and a `call()` that is total for every wire-level
   condition and refuses a closed client with the package's own
-  `RuntimeError`.
+  `RuntimeError`. A determined result outranks cleanup noise: once a response
+  or a size refusal exists, a wire error raised while releasing the response
+  stream is suppressed rather than replacing it, and a body read whole is
+  never truncated by that release. The response byte bound governs retained
+  decoded bytes.
 - `WireRequest`, `WireResponse`, `WireFailure`, and the closed
   `WireFailureKind` taxonomy describing one wire exchange as values. A body
   refused for size reports the bytes observed and both the parsed
@@ -27,4 +31,6 @@ and this project adheres to
   same rule on this path as on a response. `WireFailure.from_error` builds one
   failure from the exception that produced it.
 - `parse_retry_after` and `is_dispatchable_url` as pure, uncapped, total
-  parsing helpers.
+  parsing helpers. Totality covers values the interpreter itself refuses to
+  convert, such as a digit string past the integer-conversion digit limit or a
+  date whose year cannot be shifted to UTC.

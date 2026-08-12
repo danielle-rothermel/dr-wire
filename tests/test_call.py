@@ -31,16 +31,22 @@ if TYPE_CHECKING:
 
 
 class ByteChunks(httpx.SyncByteStream):
-    """Yield one byte at a time so a bound is crossed at an exact byte."""
+    """Yield a body in fixed-size pieces, one byte at a time by default.
 
-    def __init__(self, content: bytes) -> None:
+    Single-byte pieces let a bound be crossed at an exact byte; a larger
+    ``chunk_size`` models a transport delivering realistic pieces.
+    """
+
+    def __init__(self, content: bytes, *, chunk_size: int = 1) -> None:
         self._content = content
+        self._chunk_size = chunk_size
         self.yielded = 0
 
     def __iter__(self) -> Iterator[bytes]:
-        for byte in self._content:
-            self.yielded += 1
-            yield bytes((byte,))
+        for start in range(0, len(self._content), self._chunk_size):
+            piece = self._content[start : start + self._chunk_size]
+            self.yielded += len(piece)
+            yield piece
 
 
 def _raising(error: BaseException) -> Any:
@@ -133,6 +139,138 @@ def test_a_body_refused_for_size_still_reports_its_retry_after() -> None:
     assert result.retry_after.kind == "delta_seconds"
     assert result.retry_after.value == 12
     assert result.retry_after_header == header
+
+
+@pytest.mark.parametrize(
+    "header",
+    ["9" * 5000, "Fri, 31 Dec 9999 23:59:59 -1400"],
+    ids=("past-int-digit-limit", "year-overflows-utc-shift"),
+)
+def test_an_unparseable_retry_after_never_escapes_the_call(
+    header: str,
+) -> None:
+    """A peer choosing an unconvertible hint gets a response, not a crash."""
+    result = make_client(
+        lambda _request: httpx.Response(
+            429, headers={"retry-after": header}, content=OK_BODY
+        )
+    ).call(make_request())
+
+    assert isinstance(result, WireResponse)
+    assert result.status_code == 429
+    assert result.body == OK_BODY
+    assert result.retry_after is None
+
+
+class ClosingFailsStream(httpx.SyncByteStream):
+    """Deliver a whole body, then fail the way a broken close does."""
+
+    def __init__(self, content: bytes, *, chunk_size: int = 8192) -> None:
+        self._content = content
+        self._chunk_size = chunk_size
+        self.closed = False
+
+    def __iter__(self) -> Iterator[bytes]:
+        for start in range(0, len(self._content), self._chunk_size):
+            yield self._content[start : start + self._chunk_size]
+
+    def close(self) -> None:
+        self.closed = True
+        raise httpx.CloseError("close failed after the exchange completed")
+
+
+def test_a_close_error_never_truncates_a_completed_body() -> None:
+    """A body read whole arrives whole, down to its final partial piece.
+
+    A reader that buffers into fixed-size pieces holds the trailing
+    partial piece back until the stream ends, which is exactly when the
+    failing release happens, so a body whose length is not a multiple of
+    that piece size is where silent truncation would show up.
+    """
+    body = b"x" * (RESPONSE_STREAM_CHUNK_BYTES * 2 + 100)
+    stream = ClosingFailsStream(body)
+
+    result = make_client(
+        lambda _request: httpx.Response(200, stream=stream)
+    ).call(make_request())
+
+    assert isinstance(result, WireResponse)
+    assert result.body == body
+    assert stream.closed
+
+
+def test_a_close_error_does_not_mask_a_size_refusal() -> None:
+    """The determined refusal outranks noise from tearing the stream down.
+
+    The refusal carries the only peer guidance the exchange delivered, so
+    a close that fails afterwards must not replace it with a transport
+    failure that describes neither the bound nor the hint.
+    """
+    stream = ClosingFailsStream(OK_BODY)
+    result = make_client(
+        lambda _request: httpx.Response(
+            429, headers={"retry-after": "12"}, stream=stream
+        ),
+        max_response_bytes=1,
+    ).call(make_request())
+
+    assert isinstance(result, WireFailure)
+    assert result.kind is WireFailureKind.RESPONSE_TOO_LARGE
+    assert result.observed_bytes == len(OK_BODY)
+    assert result.retry_after is not None
+    assert result.retry_after.value == 12
+    assert result.retry_after_header == "12"
+    assert stream.closed
+
+
+def test_a_close_error_does_not_mask_a_completed_response() -> None:
+    stream = ClosingFailsStream(OK_BODY)
+    result = make_client(
+        lambda _request: httpx.Response(
+            200, headers={"x-seen": "1"}, stream=stream
+        )
+    ).call(make_request())
+
+    assert isinstance(result, WireResponse)
+    assert result.status_code == 200
+    assert result.body == OK_BODY
+    assert result.headers["x-seen"] == "1"
+    assert stream.closed
+
+
+def test_a_close_error_never_truncates_a_decoded_body() -> None:
+    """Decoding happens in this reader, so a flushed tail survives too."""
+    body = b"payload " * 5000
+    stream = ClosingFailsStream(gzip.compress(body))
+
+    result = make_client(
+        lambda _request: httpx.Response(
+            200, headers={"content-encoding": "gzip"}, stream=stream
+        )
+    ).call(make_request())
+
+    assert isinstance(result, WireResponse)
+    assert result.body == body
+    assert stream.closed
+
+
+def test_a_wire_error_before_any_result_is_still_translated() -> None:
+    """The boundary holds from the other side: nothing determined, no result.
+
+    A mid-body failure reaches call() for translation exactly as before,
+    so suppressing cleanup noise cannot swallow a genuine failure.
+    """
+    client = make_client(
+        lambda _request: httpx.Response(
+            200, stream=_DefectiveStream(httpx.ReadError("lost mid-body"))
+        )
+    )
+
+    result = client.call(make_request())
+
+    assert isinstance(result, WireFailure)
+    assert result.kind is WireFailureKind.NETWORK_ERROR
+    assert result.exception_type == "ReadError"
 
 
 def test_a_refusal_with_no_response_head_reports_no_retry_after() -> None:
@@ -391,10 +529,12 @@ def test_the_response_is_read_one_bounded_chunk_at_a_time() -> None:
     limit = 1
 
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"x" * over_limit)
+        return httpx.Response(
+            200, stream=ByteChunks(b"x" * over_limit, chunk_size=8192)
+        )
 
     client = make_client(handler, max_response_bytes=limit)
-    original = httpx.Response.iter_bytes
+    original = httpx.Response.iter_raw
 
     def recording(
         self: httpx.Response, chunk_size: int | None = None
@@ -403,7 +543,7 @@ def test_the_response_is_read_one_bounded_chunk_at_a_time() -> None:
         return original(self, chunk_size=chunk_size)
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(httpx.Response, "iter_bytes", recording)
+        patch.setattr(httpx.Response, "iter_raw", recording)
         result = client.call(make_request())
 
     assert requested[-1] == RESPONSE_STREAM_CHUNK_BYTES
@@ -412,6 +552,23 @@ def test_the_response_is_read_one_bounded_chunk_at_a_time() -> None:
     assert result.observed_bytes is not None
     assert result.observed_bytes <= limit + RESPONSE_STREAM_CHUNK_BYTES
     assert result.observed_bytes < over_limit
+
+
+def test_the_reader_rests_on_underlying_client_internals_that_exist() -> None:
+    """Reading a body whole depends on internals httpx does not publish.
+
+    ``_get_content_decoder`` and the buffered-``_content`` attribute have
+    no public equivalent, so an upgrade that renames either one must fail
+    here rather than at the first response that needs decoding.
+    """
+    response = httpx.Response(200, content=OK_BODY)
+
+    assert hasattr(response, "_content")
+    assert callable(response._get_content_decoder)
+
+    streamed = httpx.Response(200, stream=ByteChunks(OK_BODY))
+    assert not hasattr(streamed, "_content")
+    assert callable(streamed.is_closed.__bool__)
 
 
 def test_a_missing_content_length_does_not_truncate_the_body() -> None:
