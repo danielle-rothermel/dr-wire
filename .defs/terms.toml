@@ -1,3 +1,105 @@
 #:schema ./terms.schema.json
 
-terms = []
+[[terms]]
+name = "bounded HTTP client"
+definition = """
+One long-lived synchronous HTTP client that owns its connection pool, \
+enforces explicit byte and timeout bounds on every exchange, and passes \
+through an explicit lifecycle from open to closed."""
+exported_symbols = ["BoundedHttpClient"]
+categories = ["client"]
+
+[[terms]]
+name = "http client config"
+definition = """
+The complete set of resource bounds one bounded HTTP client enforces: every \
+timeout phase, the connection-pool sizes, and the request and response byte \
+limits. Every field is required and none is ever persisted."""
+exported_symbols = ["HttpClientConfig"]
+categories = ["client", "bounds"]
+part_of = ["bounded HTTP client"]
+
+[[terms]]
+name = "wire request"
+definition = """
+One fully encoded request handed to the bounded HTTP client for dispatch: \
+method, absolute URL, headers, and body bytes."""
+exported_symbols = ["WireRequest"]
+categories = ["wire"]
+
+[[terms]]
+name = "wire result"
+definition = """
+The value one dispatch attempt produces: either a wire response or a wire \
+failure, never a raised transport exception."""
+categories = ["wire"]
+
+[[terms]]
+name = "wire response"
+definition = """
+One response received in full, carrying its HTTP status, headers, decoded \
+body bytes, and any parsed Retry-After hint. Every status arrives as a wire \
+response, including redirects and server errors."""
+exported_symbols = ["WireResponse"]
+categories = ["wire"]
+is_a = ["wire result"]
+
+[[terms]]
+name = "wire failure"
+definition = """
+One dispatch attempt that produced no response, carrying its wire failure \
+kind, the originating exception type, a static summary message, a full \
+traceback, and the observed byte count for a bound refusal. Its from_error \
+constructor builds one from the exception that produced it, taking the \
+exception type and traceback from the error while the summary message stays \
+the caller's static text."""
+exported_symbols = ["WireFailure"]
+categories = ["wire"]
+is_a = ["wire result"]
+
+[[terms]]
+name = "wire failure kind"
+definition = """
+The closed taxonomy naming why a dispatch attempt produced no response. Its \
+members are never persisted; a consumer maps them into its own recorded \
+vocabulary at its own boundary."""
+exported_symbols = ["WireFailureKind"]
+categories = ["wire", "taxonomy"]
+part_of = ["wire failure"]
+
+[[terms]]
+name = "parsed Retry-After"
+definition = """
+One Retry-After header value parsed into its declared form, either a \
+non-negative delta-seconds integer or a canonical UTC HTTP-date string. No \
+magnitude or length cap is applied."""
+exported_symbols = ["ParsedRetryAfter", "parse_retry_after"]
+categories = ["wire", "headers"]
+
+[[terms]]
+name = "dispatchable URL"
+definition = """
+A URL carrying an http or https scheme and a non-empty host, which is what \
+the client requires before a request can reach a network peer."""
+exported_symbols = ["is_dispatchable_url"]
+categories = ["wire"]
+
+[[terms]]
+name = "work admission"
+definition = """
+A held claim that one unit of caller work is in flight, which a clean close \
+waits to drain before it releases the client. Admission is granted while the \
+client is open and while offloaded work drains, and refused thereafter."""
+exported_symbols = ["CLOSING_OR_CLOSED_MSG"]
+categories = ["client", "lifecycle"]
+part_of = ["bounded HTTP client"]
+
+[[terms]]
+name = "offload"
+definition = """
+Submission of caller work to the client-owned executor, which is created on \
+first use and sized from the config's max_connections so worker count and \
+connection-pool size cannot disagree."""
+exported_symbols = ["OFFLOAD_THREAD_NAME_PREFIX"]
+categories = ["client", "lifecycle"]
+part_of = ["bounded HTTP client"]
