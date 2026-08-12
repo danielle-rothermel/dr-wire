@@ -1,18 +1,25 @@
-"""Typed values describing one wire exchange.
+"""Typed values describing one wire exchange, and their classification.
 
 Nothing in this module is ever persisted. These are in-process values
 handed back to the caller, which maps them into whatever vocabulary it
 records. Field names and enum member names here are free to change with
 the package version; a consumer that stores a value stores its own
 literal, derived at its own boundary.
+
+Mapping an ``httpx`` exception onto a failure kind lives here beside the
+taxonomy it produces, so the closed set of kinds and the rules that
+reach them are read together.
 """
 
 from __future__ import annotations
 
+import traceback
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum, StrEnum, auto, unique
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
+
+import httpx
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -53,6 +60,65 @@ class WireFailureKind(Enum):
     streaming."""
     UNKNOWN = auto()
     """A wire error outside every other named condition."""
+
+
+@unique
+class WireFailureMessage(StrEnum):
+    """Static summary text for each family of wire failure.
+
+    These messages never embed peer-controlled detail, so a summary can
+    be logged or compared without carrying anything the peer chose. Like
+    every other value here they are in-process only.
+    """
+
+    TRANSPORT_ERROR = "http transport error"
+    TIMEOUT = "http transport timeout"
+    INVALID_URL = "url is not dispatchable as http or https"
+    REQUEST_TOO_LARGE = "request body exceeds the configured byte limit"
+    RESPONSE_TOO_LARGE = "response body exceeds the configured byte limit"
+
+
+def _timeout_kind(error: httpx.TimeoutException) -> WireFailureKind:
+    """Name the timeout phase so local contention stays distinguishable."""
+    if isinstance(error, httpx.PoolTimeout):
+        return WireFailureKind.POOL_TIMEOUT
+    if isinstance(error, httpx.ReadTimeout):
+        return WireFailureKind.STALLED_RESPONSE
+    return WireFailureKind.TIMEOUT
+
+
+_HTTP_ERROR_KINDS: Mapping[type[httpx.HTTPError], WireFailureKind] = {
+    httpx.RemoteProtocolError: WireFailureKind.REMOTE_PROTOCOL_ERROR,
+    httpx.ProtocolError: WireFailureKind.LOCAL_PROTOCOL_ERROR,
+    httpx.DecodingError: WireFailureKind.LOCAL_PROTOCOL_ERROR,
+    httpx.UnsupportedProtocol: WireFailureKind.LOCAL_PROTOCOL_ERROR,
+    httpx.TooManyRedirects: WireFailureKind.LOCAL_PROTOCOL_ERROR,
+    httpx.ConnectError: WireFailureKind.CONNECT_ERROR,
+    httpx.NetworkError: WireFailureKind.NETWORK_ERROR,
+    httpx.ProxyError: WireFailureKind.NETWORK_ERROR,
+}
+
+
+def _http_error_kind(error: httpx.HTTPError) -> WireFailureKind:
+    """Classify one httpx wire error.
+
+    The most specific class in the error's MRO wins, so a subclass named
+    in the table is reached before the family it belongs to. The table
+    itself is genuinely unordered.
+    """
+    if isinstance(error, httpx.TimeoutException):
+        return _timeout_kind(error)
+    for cls in type(error).__mro__:
+        kind = _HTTP_ERROR_KINDS.get(cls)
+        if kind is not None:
+            return kind
+    return WireFailureKind.UNKNOWN
+
+
+def _exception_traceback(error: BaseException) -> str:
+    return "".join(
+        traceback.format_exception(type(error), error, error.__traceback__)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,3 +204,23 @@ class WireFailure:
     observed_bytes: int | None = None
     retry_after: ParsedRetryAfter | None = None
     retry_after_header: str | None = None
+
+    @classmethod
+    def from_error(
+        cls,
+        kind: WireFailureKind,
+        error: BaseException,
+        message: str,
+    ) -> WireFailure:
+        """Build one failure from the exception that produced it.
+
+        ``exception_type`` and ``traceback`` are taken from ``error``,
+        while ``message`` stays the caller's static summary so no
+        peer-controlled detail reaches it.
+        """
+        return cls(
+            kind=kind,
+            exception_type=type(error).__name__,
+            message=message,
+            traceback=_exception_traceback(error),
+        )

@@ -6,9 +6,20 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
-from _support import OK_BODY, make_client, make_config, make_request
+from _support import (
+    OK_BODY,
+    make_client,
+    make_config,
+    make_request,
+    ok_handler,
+)
 
-from dr_http import WireFailure, WireFailureKind, WireResponse
+from dr_http import (
+    BoundedHttpClient,
+    WireFailure,
+    WireFailureKind,
+    WireResponse,
+)
 from dr_http.client import (
     CLOSING_OR_CLOSED_MSG,
     RESPONSE_STREAM_CHUNK_BYTES,
@@ -443,7 +454,7 @@ def test_a_defect_before_dispatch_crashes_rather_than_reporting_a_kind() -> (
             raise ValueError(msg)
 
     client = make_client(
-        client=BrokenStreamClient(transport=httpx.MockTransport(ok_response))
+        client=BrokenStreamClient(transport=httpx.MockTransport(ok_handler))
     )
 
     with pytest.raises(ValueError, match="defect before the request"):
@@ -489,10 +500,6 @@ def test_a_wire_error_after_dispatch_is_still_reported_as_a_kind() -> None:
     assert result.exception_type == "ReadError"
 
 
-def ok_response(_request: httpx.Request) -> httpx.Response:
-    return httpx.Response(200, content=OK_BODY)
-
-
 def test_native_timeout_phases_are_explicit_and_saturated() -> None:
     timeout = _httpx_timeout(
         make_config(
@@ -529,9 +536,7 @@ def test_the_pool_is_sized_from_the_config() -> None:
     def factory(**kwargs: Any) -> httpx.Client:
         seen.append(kwargs["limits"])
         assert kwargs["follow_redirects"] is False
-        return httpx.Client(transport=httpx.MockTransport(ok_response))
-
-    from dr_http import BoundedHttpClient
+        return httpx.Client(transport=httpx.MockTransport(ok_handler))
 
     BoundedHttpClient(
         make_config(max_connections=7, max_keepalive_connections=3),

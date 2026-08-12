@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import contextlib
 import threading
-import traceback
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
@@ -20,7 +20,10 @@ from dr_http.headers import parse_retry_after
 from dr_http.wire import (
     WireFailure,
     WireFailureKind,
+    WireFailureMessage,
     WireResponse,
+    _http_error_kind,
+    _timeout_kind,
 )
 
 if TYPE_CHECKING:
@@ -30,15 +33,17 @@ if TYPE_CHECKING:
     from dr_http.config import HttpClientConfig
     from dr_http.wire import WireRequest
 
+# Tuning bound: how much a caller buffers past the limit before refusal.
 RESPONSE_STREAM_CHUNK_BYTES = 64 * 1024
+
+# Thread identity: names this client's executor threads in a stack dump.
 OFFLOAD_THREAD_NAME_PREFIX = "dr-http-offload"
+
+# Lifecycle message: the one refusal every closed-client path raises.
 CLOSING_OR_CLOSED_MSG = "BoundedHttpClient is closing or closed"
 
-TRANSPORT_ERROR_MESSAGE = "http transport error"
-TIMEOUT_MESSAGE = "http transport timeout"
-INVALID_URL_MESSAGE = "url is not dispatchable as http or https"
-REQUEST_TOO_LARGE_MESSAGE = "request body exceeds the configured byte limit"
-RESPONSE_TOO_LARGE_MESSAGE = "response body exceeds the configured byte limit"
+# The RFC-defined header name, read once and carried once.
+RETRY_AFTER_HEADER = "retry-after"
 
 
 class _ClientState(Enum):
@@ -48,84 +53,34 @@ class _ClientState(Enum):
     CLOSED = auto()
 
 
-_CLOSING_STATES = frozenset(
-    {_ClientState.DRAINING_OFFLOADS, _ClientState.CLOSING}
-)
-_USABLE_STATES = frozenset({_ClientState.OPEN, _ClientState.DRAINING_OFFLOADS})
+@dataclass(frozen=True, slots=True)
+class _BodyRefusedForSize:
+    """A response body that crossed the byte bound while streaming.
+
+    ``observed_bytes`` is the count that crossed the bound rather than
+    the full body size, because the stream stops there.
+    """
+
+    observed_bytes: int
 
 
-def _operational_timeout_seconds(timeout_seconds: float) -> float:
-    return min(timeout_seconds, threading.TIMEOUT_MAX)
+def _saturate(seconds: float) -> float:
+    return min(seconds, threading.TIMEOUT_MAX)
 
 
 def _httpx_timeout(config: HttpClientConfig) -> httpx.Timeout:
-    """Use direct native phase timeouts for the synchronous operation."""
-    operation_timeout = _operational_timeout_seconds(config.timeout_seconds)
-    connect_timeout = _operational_timeout_seconds(
-        config.connect_timeout_seconds
-    )
-    read_timeout = _operational_timeout_seconds(config.idle_timeout_seconds)
-    return httpx.Timeout(
-        connect=connect_timeout,
-        read=read_timeout,
-        write=operation_timeout,
-        pool=operation_timeout,
-    )
+    """Use direct native phase timeouts for the synchronous operation.
 
-
-def _exception_traceback(error: BaseException) -> str:
-    return "".join(
-        traceback.format_exception(type(error), error, error.__traceback__)
-    )
-
-
-def _timeout_kind(error: httpx.TimeoutException) -> WireFailureKind:
-    """Name the timeout phase so local contention stays distinguishable."""
-    if isinstance(error, httpx.PoolTimeout):
-        return WireFailureKind.POOL_TIMEOUT
-    if isinstance(error, httpx.ReadTimeout):
-        return WireFailureKind.STALLED_RESPONSE
-    return WireFailureKind.TIMEOUT
-
-
-def _http_error_kind(error: httpx.HTTPError) -> WireFailureKind:
-    """Classify one non-timeout httpx wire error.
-
-    Ordering is significant: ``RemoteProtocolError`` is checked before
-    the other protocol errors because a peer that violates the protocol
-    is a different condition from a violation on this side, and
-    ``ConnectError`` is checked before the wider ``NetworkError`` family
-    it belongs to.
+    ``connect_timeout_seconds`` owns the connect phase and
+    ``idle_timeout_seconds`` owns the read phase, while the general
+    ``timeout_seconds`` owns both the write and pool phases. Each is
+    saturated at ``threading.TIMEOUT_MAX``.
     """
-    if isinstance(error, httpx.TimeoutException):
-        return _timeout_kind(error)
-    if isinstance(error, httpx.RemoteProtocolError):
-        return WireFailureKind.REMOTE_PROTOCOL_ERROR
-    if isinstance(
-        error,
-        httpx.ProtocolError
-        | httpx.DecodingError
-        | httpx.UnsupportedProtocol
-        | httpx.TooManyRedirects,
-    ):
-        return WireFailureKind.LOCAL_PROTOCOL_ERROR
-    if isinstance(error, httpx.ConnectError):
-        return WireFailureKind.CONNECT_ERROR
-    if isinstance(error, httpx.NetworkError | httpx.ProxyError):
-        return WireFailureKind.NETWORK_ERROR
-    return WireFailureKind.UNKNOWN
-
-
-def _failure_from_error(
-    kind: WireFailureKind,
-    error: BaseException,
-    message: str,
-) -> WireFailure:
-    return WireFailure(
-        kind=kind,
-        exception_type=type(error).__name__,
-        message=message,
-        traceback=_exception_traceback(error),
+    return httpx.Timeout(
+        connect=_saturate(config.connect_timeout_seconds),
+        read=_saturate(config.idle_timeout_seconds),
+        write=_saturate(config.timeout_seconds),
+        pool=_saturate(config.timeout_seconds),
     )
 
 
@@ -178,9 +133,9 @@ class BoundedHttpClient:
         became_primary = False
         try:
             with self._condition:
-                if self._state is _ClientState.CLOSED:
-                    return
-                if self._state in _CLOSING_STATES:
+                if self._state is not _ClientState.OPEN:
+                    # An already-terminal client never waits here: the
+                    # loop guard is false on entry.
                     while self._state is not _ClientState.CLOSED:
                         self._condition.wait()
                     return
@@ -280,11 +235,19 @@ class BoundedHttpClient:
             self._active_offloads += 1
             executor = self._executor
 
-        released = threading.Lock()
+        release_once = threading.Lock()
 
         def release() -> None:
-            """Release this offload's hold on the drain exactly once."""
-            if released.acquire(blocking=False):
+            """Release this offload's hold on the drain exactly once.
+
+            Three call sites race to release: the work's own ``finally``
+            when it returns or raises, this scope when submission itself
+            fails, and the future's done callback when the work was
+            cancelled while queued. Whichever arrives first wins the
+            lock, and the rest are no-ops, so the drain neither hangs on
+            a hold never released nor ends early on one released twice.
+            """
+            if release_once.acquire(blocking=False):
                 self._end_offload()
 
         def run() -> ResultT:
@@ -307,21 +270,26 @@ class BoundedHttpClient:
             if self._active_offloads == 0:
                 self._condition.notify_all()
 
-    def _require_usable(self) -> None:
+    def _refuse_if_drained(self) -> None:
         """Refuse a caller once the work drain has begun.
 
         The same predicate governs admission and dispatch, so a caller
         that reaches the client too late always sees this package's own
-        message rather than the underlying client's.
+        message rather than the underlying client's. The caller holds
+        the condition lock, so a refusal and whatever it guards stay one
+        critical section.
         """
-        with self._condition:
-            if self._state not in _USABLE_STATES:
-                raise RuntimeError(CLOSING_OR_CLOSED_MSG)
+        # Usable while open and while offloaded work drains, so draining
+        # work can finish whole units; refused from CLOSING onward.
+        if self._state not in {
+            _ClientState.OPEN,
+            _ClientState.DRAINING_OFFLOADS,
+        }:
+            raise RuntimeError(CLOSING_OR_CLOSED_MSG)
 
     def _begin_work(self) -> None:
         with self._condition:
-            if self._state not in _USABLE_STATES:
-                raise RuntimeError(CLOSING_OR_CLOSED_MSG)
+            self._refuse_if_drained()
             self._active_work += 1
 
     def _end_work(self) -> None:
@@ -351,46 +319,21 @@ class BoundedHttpClient:
         returning a ``WireFailure`` or surfacing the underlying client's
         message.
         """
-        self._require_usable()
+        with self._condition:
+            self._refuse_if_drained()
         if len(request.body) > self._config.max_request_bytes:
             return WireFailure(
                 kind=WireFailureKind.REQUEST_TOO_LARGE,
                 exception_type="",
-                message=REQUEST_TOO_LARGE_MESSAGE,
+                message=WireFailureMessage.REQUEST_TOO_LARGE,
                 traceback="",
                 observed_bytes=len(request.body),
             )
         try:
-            with self._client.stream(
-                request.method,
-                request.url,
-                content=request.body,
-                headers=dict(request.headers),
-                timeout=_httpx_timeout(self._config),
-                follow_redirects=False,
-            ) as http_response:
-                retry_after_header = http_response.headers.get("retry-after")
-                retry_after = parse_retry_after(retry_after_header)
-                body, observed_bytes = self._read_response(http_response)
-                if body is None:
-                    return WireFailure(
-                        kind=WireFailureKind.RESPONSE_TOO_LARGE,
-                        exception_type="",
-                        message=RESPONSE_TOO_LARGE_MESSAGE,
-                        traceback="",
-                        observed_bytes=observed_bytes,
-                        retry_after=retry_after,
-                        retry_after_header=retry_after_header,
-                    )
-                return WireResponse(
-                    status_code=http_response.status_code,
-                    headers=dict(http_response.headers),
-                    body=bytes(body),
-                    retry_after=retry_after,
-                )
+            return self._exchange(request)
         except httpx.TimeoutException as error:
-            return _failure_from_error(
-                _timeout_kind(error), error, TIMEOUT_MESSAGE
+            return WireFailure.from_error(
+                _timeout_kind(error), error, WireFailureMessage.TIMEOUT
             )
         except httpx.InvalidURL as error:
             # httpx.InvalidURL is not an httpx.HTTPError, so without this
@@ -399,24 +342,60 @@ class BoundedHttpClient:
             # builds the request, so nothing reached the wire, whereas
             # any other post-dispatch error is a defect of ours and must
             # crash loudly rather than claim the request was never sent.
-            return _failure_from_error(
-                WireFailureKind.INVALID_URL, error, INVALID_URL_MESSAGE
+            return WireFailure.from_error(
+                WireFailureKind.INVALID_URL,
+                error,
+                WireFailureMessage.INVALID_URL,
             )
         except httpx.HTTPError as error:
-            return _failure_from_error(
-                _http_error_kind(error), error, TRANSPORT_ERROR_MESSAGE
+            return WireFailure.from_error(
+                _http_error_kind(error),
+                error,
+                WireFailureMessage.TRANSPORT_ERROR,
+            )
+
+    def _exchange(self, request: WireRequest) -> WireResponse | WireFailure:
+        """Stream one dispatched exchange into a wire value.
+
+        Every failure this produces is a refused response bound; a wire
+        exception raised here reaches ``call`` for translation.
+        """
+        with self._client.stream(
+            request.method,
+            request.url,
+            content=request.body,
+            headers=dict(request.headers),
+            timeout=_httpx_timeout(self._config),
+            follow_redirects=False,
+        ) as http_response:
+            retry_after_header = http_response.headers.get(RETRY_AFTER_HEADER)
+            retry_after = parse_retry_after(retry_after_header)
+            body = self._read_response(http_response)
+            if isinstance(body, _BodyRefusedForSize):
+                return WireFailure(
+                    kind=WireFailureKind.RESPONSE_TOO_LARGE,
+                    exception_type="",
+                    message=WireFailureMessage.RESPONSE_TOO_LARGE,
+                    traceback="",
+                    observed_bytes=body.observed_bytes,
+                    retry_after=retry_after,
+                    retry_after_header=retry_after_header,
+                )
+            return WireResponse(
+                status_code=http_response.status_code,
+                headers=dict(http_response.headers),
+                body=body,
+                retry_after=retry_after,
             )
 
     def _read_response(
         self, http_response: httpx.Response
-    ) -> tuple[bytearray | None, int]:
+    ) -> bytes | _BodyRefusedForSize:
         """Stream the body, refusing it the moment it exceeds the bound.
 
         The bound applies to decompressed bytes, which is what a caller
         must hold in memory, and the stream stops at the first chunk
-        that crosses it rather than reading the rest. The returned count
-        is the bytes observed, which on refusal is the count that
-        crossed the bound rather than the full body size.
+        that crosses it rather than reading the rest.
         """
         body = bytearray()
         observed_bytes = 0
@@ -425,6 +404,6 @@ class BoundedHttpClient:
         ):
             observed_bytes += len(chunk)
             if observed_bytes > self._config.max_response_bytes:
-                return None, observed_bytes
+                return _BodyRefusedForSize(observed_bytes=observed_bytes)
             body.extend(chunk)
-        return body, observed_bytes
+        return bytes(body)

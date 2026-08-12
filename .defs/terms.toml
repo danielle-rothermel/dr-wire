@@ -49,7 +49,10 @@ name = "wire failure"
 definition = """
 One dispatch attempt that produced no response, carrying its wire failure \
 kind, the originating exception type, a static summary message, a full \
-traceback, and the observed byte count for a bound refusal."""
+traceback, and the observed byte count for a bound refusal. Its from_error \
+constructor builds one from the exception that produced it, taking the \
+exception type and traceback from the error while the summary message stays \
+the caller's static text."""
 exported_symbols = ["WireFailure"]
 categories = ["wire"]
 is_a = ["wire result"]

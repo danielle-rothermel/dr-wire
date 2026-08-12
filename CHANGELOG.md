@@ -24,6 +24,7 @@ and this project adheres to
   refused for size reports the bytes observed and both the parsed
   `Retry-After` hint its response head carried and that header's raw value,
   so a consumer whose retention policy bounds the header itself can apply the
-  same rule on this path as on a response.
+  same rule on this path as on a response. `WireFailure.from_error` builds one
+  failure from the exception that produced it.
 - `parse_retry_after` and `is_dispatchable_url` as pure, uncapped, total
   parsing helpers.
