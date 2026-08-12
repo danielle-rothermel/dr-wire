@@ -18,11 +18,12 @@ and this project adheres to
   caller work against that drain, an `offload()` executor sized from
   `max_connections`, and a `call()` that is total for every wire-level
   condition and refuses a closed client with the package's own
-  `RuntimeError`. A determined result outranks cleanup noise: once a response
-  or a size refusal exists, a wire error raised while releasing the response
-  stream is suppressed rather than replacing it, and a body read whole is
-  never truncated by that release. The response byte bound governs retained
-  decoded bytes.
+  `RuntimeError`. A determined result outranks cleanup noise: once a result
+  exists, a wire error raised while releasing the response stream is
+  suppressed rather than replacing it, so a size refusal keeps its
+  `Retry-After` hint. A stream failing while its final bytes are still
+  arriving reports as a wire failure rather than as a truncated body. The
+  response byte bound governs retained decoded bytes.
 - `WireRequest`, `WireResponse`, `WireFailure`, and the closed
   `WireFailureKind` taxonomy describing one wire exchange as values. A body
   refused for size reports the bytes observed and both the parsed

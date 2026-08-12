@@ -64,53 +64,6 @@ class _BodyRefusedForSize:
     observed_bytes: int
 
 
-def _decoded_chunks(http_response: httpx.Response) -> Iterator[bytes]:
-    """Yield decoded body bytes, keeping a whole body whole.
-
-    The underlying client's decoded iterator releases the connection
-    from inside itself once the body ends, so a release that fails there
-    raises out of the same step that would have delivered the final
-    decoded bytes, and the bytes it withheld die with that generator's
-    frame. Iterating raw transport chunks and decoding them here keeps
-    every decoded byte in this frame, so a failing release after the
-    last byte is cleanup noise about a body already read whole rather
-    than a silent truncation. A failure before the last byte propagates.
-
-    A response the underlying client already buffered exposes no raw
-    stream to iterate and has nothing left to release, so its content is
-    yielded directly.
-    """
-    if hasattr(http_response, "_content"):
-        yield http_response.content
-        return
-
-    decoder = http_response._get_content_decoder()
-    raw_chunks = http_response.iter_raw(chunk_size=RESPONSE_STREAM_CHUNK_BYTES)
-    while True:
-        try:
-            raw_chunk = next(raw_chunks)
-        except StopIteration:
-            break
-        except httpx.HTTPError:
-            if not _body_is_complete(http_response):
-                raise
-            break
-        yield decoder.decode(raw_chunk)
-    yield decoder.flush()
-
-
-def _body_is_complete(http_response: httpx.Response) -> bool:
-    """Report whether the body was read whole before this error.
-
-    The underlying client marks the response closed as it begins
-    releasing the connection, which it does only once the body iterator
-    is exhausted. So a wire error carrying this flag was raised while
-    releasing a body already read whole, while a mid-body error leaves
-    it unset.
-    """
-    return http_response.is_closed
-
-
 def _saturate(seconds: float) -> float:
     return min(seconds, threading.TIMEOUT_MAX)
 
@@ -407,15 +360,19 @@ class BoundedHttpClient:
         Every failure this produces is a refused response bound; a wire
         exception raised here reaches ``call`` for translation.
 
-        A completed exchange outranks cleanup noise. Once the result is
-        determined, closing the response stream can no longer change what
-        happened on the wire, so a wire error raised by that close is
-        suppressed and the determined result is returned. Reporting it
+        A determined result outranks cleanup noise. Once this method
+        holds a result, releasing the response stream can no longer
+        change what happened on the wire, so a wire error raised by that
+        release is suppressed and the result is returned. Reporting it
         instead would discard the exchange's real outcome, including the
-        Retry-After hint a size refusal preserves. Before a result
-        exists, nothing has been determined, so every exception
-        propagates to ``call`` for translation exactly as it does
-        mid-body.
+        Retry-After hint a size refusal preserves. A size refusal is the
+        case this reaches, because it stops reading mid-body and so
+        holds its result before the stream is released.
+
+        A result exists only once the body finished arriving. A stream
+        that fails while its final bytes are still being delivered
+        leaves no result, so the error propagates to ``call`` for
+        translation exactly as a mid-body error does.
         """
         result: WireResponse | WireFailure | None = None
         try:
@@ -469,18 +426,18 @@ class BoundedHttpClient:
         raw chunk exceeds the bound by up to the codec's expansion
         ratio.
 
-        Decoded chunks come from ``_decoded_chunks`` rather than from the
-        underlying client's decoded iterator, because that iterator
-        releases the connection from inside itself once the body ends
-        and withholds a partial trailing chunk until it does. A release
-        that fails there would discard those final bytes, returning a
-        silently truncated body as though it were whole. A wire error
-        raised while the body is still arriving leaves it genuinely
-        incomplete, so it propagates for translation.
+        The underlying client releases the connection from inside this
+        iterator once the body ends, and it withholds a partial trailing
+        chunk until that same step. A release failing there raises
+        instead of delivering those final bytes, so the body is
+        incomplete and the error propagates for translation rather than
+        yielding a silently truncated body.
         """
         body = bytearray()
         observed_bytes = 0
-        for chunk in _decoded_chunks(http_response):
+        for chunk in http_response.iter_bytes(
+            chunk_size=RESPONSE_STREAM_CHUNK_BYTES
+        ):
             observed_bytes += len(chunk)
             if observed_bytes > self._config.max_response_bytes:
                 return _BodyRefusedForSize(observed_bytes=observed_bytes)

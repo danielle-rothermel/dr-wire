@@ -39,10 +39,12 @@ streaming, so a refused body is never fully read; both refusals report \
 observed_bytes, and a body refused for size still reports the Retry-After \
 hint its response head carried, alongside that header's raw value so a \
 consumer bounding the header itself can apply one rule on both paths. A \
-completed exchange outranks cleanup noise: once a response or a size refusal \
-is determined, a wire error raised while closing the response stream is \
-suppressed and the determined result is returned, while a wire error raised \
-before any result exists is translated as usual."""
+determined result outranks cleanup noise: once a result exists, a wire error \
+raised while releasing the response stream is suppressed and that result is \
+returned, which is what keeps a size refusal and its hint from being replaced \
+by a transport failure. A result exists only once the body finished arriving, \
+so a stream failing while its final bytes are still being delivered reports \
+as a wire failure rather than as a truncated body."""
 rationale = """
 A total wire call lets a consumer keep every transport condition inside its \
 own typed reporting instead of catching transport exceptions. Reserving \
