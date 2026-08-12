@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from dr_http import ParsedRetryAfter, is_dispatchable_url, parse_retry_after
+from dr_wire import ParsedRetryAfter, is_dispatchable_url, parse_retry_after
 
 
 @pytest.mark.parametrize(

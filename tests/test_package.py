@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import dr_http
+import dr_wire
 
 
 def test_package_exposes_version() -> None:
-    assert isinstance(dr_http.__version__, str)
-    assert dr_http.__version__
+    assert isinstance(dr_wire.__version__, str)
+    assert dr_wire.__version__
 
 
 def test_every_public_export_resolves_exactly_once() -> None:
-    assert len(set(dr_http.__all__)) == len(dr_http.__all__)
-    for symbol in dr_http.__all__:
-        assert hasattr(dr_http, symbol), symbol
+    assert len(set(dr_wire.__all__)) == len(dr_wire.__all__)
+    for symbol in dr_wire.__all__:
+        assert hasattr(dr_wire, symbol), symbol
 
 
 def test_the_package_depends_on_nothing_beyond_the_stdlib_and_httpx() -> None:
@@ -20,8 +20,8 @@ def test_the_package_depends_on_nothing_beyond_the_stdlib_and_httpx() -> None:
     import pathlib
     import sys
 
-    source_root = pathlib.Path(dr_http.__file__).parent
-    allowed = {"dr_http", "httpx", *sys.stdlib_module_names}
+    source_root = pathlib.Path(dr_wire.__file__).parent
+    allowed = {"dr_wire", "httpx", *sys.stdlib_module_names}
     imported: set[str] = set()
     for path in source_root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))

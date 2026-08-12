@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from dr_http import BoundedHttpClient, HttpClientConfig, WireRequest
+from dr_wire import BoundedHttpClient, HttpClientConfig, WireRequest
 
 TEST_TIMEOUT_SECONDS = 120.0
 TEST_CONNECT_TIMEOUT_SECONDS = 30.0

@@ -8,14 +8,14 @@ vocabulary at their own boundary.
 
 from importlib.metadata import version
 
-from dr_http.client import (
+from dr_wire.client import (
     CLOSING_OR_CLOSED_MSG,
     OFFLOAD_THREAD_NAME_PREFIX,
     BoundedHttpClient,
 )
-from dr_http.config import HttpClientConfig
-from dr_http.headers import is_dispatchable_url, parse_retry_after
-from dr_http.wire import (
+from dr_wire.config import HttpClientConfig
+from dr_wire.headers import is_dispatchable_url, parse_retry_after
+from dr_wire.wire import (
     ParsedRetryAfter,
     WireFailure,
     WireFailureKind,
@@ -23,7 +23,7 @@ from dr_http.wire import (
     WireResponse,
 )
 
-PACKAGE_NAME = "dr-http"
+PACKAGE_NAME = "dr-wire"
 
 __all__ = [
     "CLOSING_OR_CLOSED_MSG",

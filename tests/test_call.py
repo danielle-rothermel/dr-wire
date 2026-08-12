@@ -14,13 +14,13 @@ from _support import (
     ok_handler,
 )
 
-from dr_http import (
+from dr_wire import (
     BoundedHttpClient,
     WireFailure,
     WireFailureKind,
     WireResponse,
 )
-from dr_http.client import (
+from dr_wire.client import (
     CLOSING_OR_CLOSED_MSG,
     RESPONSE_STREAM_CHUNK_BYTES,
     _httpx_timeout,

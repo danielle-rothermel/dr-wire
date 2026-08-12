@@ -16,8 +16,8 @@ from _support import (
     ok_handler,
 )
 
-from dr_http import BoundedHttpClient, WireResponse
-from dr_http.client import OFFLOAD_THREAD_NAME_PREFIX
+from dr_wire import BoundedHttpClient, WireResponse
+from dr_wire.client import OFFLOAD_THREAD_NAME_PREFIX
 
 if TYPE_CHECKING:
     from collections.abc import Callable

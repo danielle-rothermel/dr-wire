@@ -1,5 +1,5 @@
 [project]
-name = "dr-http"
+name = "dr-wire"
 version = "0.1.0"
 description = "A bounded, lifecycle-managed synchronous HTTP client core."
 readme = "README.md"
@@ -32,10 +32,10 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/danielle-rothermel/dr-http"
-Issues = "https://github.com/danielle-rothermel/dr-http/issues"
-Documentation = "https://danielle-rothermel.github.io/dr-http/"
-Changelog = "https://github.com/danielle-rothermel/dr-http/blob/main/CHANGELOG.md"
+Repository = "https://github.com/danielle-rothermel/dr-wire"
+Issues = "https://github.com/danielle-rothermel/dr-wire/issues"
+Documentation = "https://danielle-rothermel.github.io/dr-wire/"
+Changelog = "https://github.com/danielle-rothermel/dr-wire/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]

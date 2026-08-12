@@ -8,7 +8,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
-import dr_http
+import dr_wire
 
 DEFS_DIRECTORY = Path(__file__).resolve().parents[1] / ".defs"
 NonEmptyText = Annotated[str, Field(min_length=1)]
@@ -133,7 +133,7 @@ def validate_exports(document: TermsDocument) -> list[str]:
             f"exports mapped more than once: {', '.join(duplicate_symbols)}"
         )
 
-    public_symbols = list(dr_http.__all__)
+    public_symbols = list(dr_wire.__all__)
     missing_symbols = sorted(set(public_symbols) - set(mapped_symbols))
     extra_symbols = sorted(set(mapped_symbols) - set(public_symbols))
     if missing_symbols:
@@ -143,7 +143,7 @@ def validate_exports(document: TermsDocument) -> list[str]:
     errors.extend(
         f"mapped export does not resolve: {symbol}"
         for symbol in mapped_symbols
-        if not hasattr(dr_http, symbol)
+        if not hasattr(dr_wire, symbol)
     )
 
     return errors
@@ -185,7 +185,7 @@ def main() -> None:
 
     print(
         f"validated {len(terms.terms)} terms, "
-        f"{len(dr_http.__all__)} exports, and "
+        f"{len(dr_wire.__all__)} exports, and "
         f"{len(contracts.contracts)} contracts"
     )
 

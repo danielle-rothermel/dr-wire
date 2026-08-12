@@ -1,6 +1,6 @@
-# dr-http
+# dr-wire
 
-A bounded, lifecycle-managed synchronous HTTP client core. `dr-http` owns one
+A bounded, lifecycle-managed synchronous HTTP client core. `dr-wire` owns one
 canonical client lifecycle: explicit bounds on connections and request bodies,
 explicit timeouts on every phase, deterministic drain-on-close, and a closed
 taxonomy of wire failures returned as values rather than leaked transport
@@ -21,7 +21,7 @@ Every resource bound one client enforces, with no defaults, so an unsized
 client cannot be constructed:
 
 ```python
-from dr_http import HttpClientConfig
+from dr_wire import HttpClientConfig
 
 config = HttpClientConfig(
     timeout_seconds=120.0,
@@ -43,7 +43,7 @@ bound different from the one the caller chose.
 ### `BoundedHttpClient`
 
 ```python
-from dr_http import BoundedHttpClient, WireRequest, WireResponse
+from dr_wire import BoundedHttpClient, WireRequest, WireResponse
 
 with BoundedHttpClient(config) as client:
     with client.admit():
@@ -105,7 +105,7 @@ never persisted.
 
 `.defs/terms.toml` and `.defs/contracts.toml` hold this repository's shared
 vocabulary and binding rules, rendered at
-[the terms and contracts page](https://danielle-rothermel.github.io/dr-http/).
+[the terms and contracts page](https://danielle-rothermel.github.io/dr-wire/).
 
 ## Checks
 

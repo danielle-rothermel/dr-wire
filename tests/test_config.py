@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from _support import make_config
 
-from dr_http import HttpClientConfig
+from dr_wire import HttpClientConfig
 
 _TIMEOUT_FIELDS = (
     "timeout_seconds",

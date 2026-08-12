@@ -7,7 +7,7 @@ from email.utils import format_datetime, parsedate_to_datetime
 
 import httpx
 
-from dr_http.wire import ParsedRetryAfter
+from dr_wire.wire import ParsedRetryAfter
 
 DISPATCH_URL_SCHEMES = frozenset({"http", "https"})
 

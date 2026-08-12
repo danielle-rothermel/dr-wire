@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from dr_http.headers import parse_retry_after
-from dr_http.wire import (
+from dr_wire.headers import parse_retry_after
+from dr_wire.wire import (
     WireFailure,
     WireFailureKind,
     WireFailureMessage,
@@ -30,14 +30,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from concurrent.futures import Future
 
-    from dr_http.config import HttpClientConfig
-    from dr_http.wire import WireRequest
+    from dr_wire.config import HttpClientConfig
+    from dr_wire.wire import WireRequest
 
 # Tuning bound: how much a caller buffers past the limit before refusal.
 RESPONSE_STREAM_CHUNK_BYTES = 64 * 1024
 
 # Thread identity: names this client's executor threads in a stack dump.
-OFFLOAD_THREAD_NAME_PREFIX = "dr-http-offload"
+OFFLOAD_THREAD_NAME_PREFIX = "dr-wire-offload"
 
 # Lifecycle message: the one refusal every closed-client path raises.
 CLOSING_OR_CLOSED_MSG = "BoundedHttpClient is closing or closed"
